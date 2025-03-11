@@ -146,13 +146,15 @@ def completeBlender():
   '''Domain Randomization
   '''
   class_id = 0
-  code_dir = os.path.dirname(os.path.realpath(__file__))
-  data_folder = f'{code_dir}/generated_data_pair/'
-  os.system(f'rm -rf {data_folder} && mkdir -p {data_folder}')
 
-  dataset_info_dir = f'{code_dir}/dataset_info.yml'
+  dataset_info_dir = f'/home/se3_tracknet/dataset_info.yml'
   with open(dataset_info_dir, 'r') as ff:
     dataset_info = yaml.safe_load(ff)
+
+  output_dir = dataset_info["output_dir"]
+  data_folder = f'{output_dir}/generated_data_pair/'
+  os.system(f'rm -rf {data_folder} && mkdir -p {data_folder}')
+
   if 'object_width' not in dataset_info:
     print('Computing object width')
     mesh = trimesh.load(dataset_info['models'][0]['model_path'])
@@ -183,8 +185,7 @@ def completeBlender():
   os.makedirs(out_val_path)
 
   producer = ProducerPurturb(dataset_info)
-  code_dir = os.path.dirname(os.path.realpath(__file__))
-  rgb_files = sorted(glob.glob(f'{code_dir}/generated_data/*rgb.png'))
+  rgb_files = sorted(glob.glob(f'{dataset_info["output_dir"]}/generated_data/*rgb.png'))
   assert len(rgb_files)>0
   print('len(rgb_files): ',len(rgb_files))
 

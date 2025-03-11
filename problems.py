@@ -53,12 +53,15 @@ import numpy as np
 import cv2
 from PIL import Image
 
+import torch
+from torch.utils.tensorboard import SummaryWriter
+
 torch.backends.cudnn.benchmark = False
 torch.backends.cudnn.deterministic = True
 
 
 class Problem:
-	def __init__(self, model, train_data_loader, valid_data_loader, config=None, optimizer=None, scheduler=None):
+	def __init__(self, model, train_data_loader, valid_data_loader, config=None, optimizer=None, scheduler=None,log_dir="/runs/"):
 		self.train_data = train_data_loader
 		self.valid_data = valid_data_loader
 		self.optimizer = optimizer
@@ -75,9 +78,12 @@ class Problem:
 		self.dataset_info = train_data_loader.dataset.dataset_info
 		self.K = self.train_data.dataset.cam_K
 
+		self.writer = SummaryWriter(log_dir)
 
-	def train(self, epoch):
+
+	def train(self, epoch, logs=False):
 		self.model.train()
+		self.train_data
 
 		for data, target, A_in_cams, B_in_cams, rgbA, rgbB, maskA, maskB in self.train_data:
 			dataA = data[0]
@@ -96,13 +102,45 @@ class Problem:
 
 			if self.global_step%100==0:
 				print("epoch={}, iter={},   loss={}".format(epoch, self.global_step, loss.data))
-				print('trans_label[0] =',target[0][0].data.cpu().numpy().reshape(-1))
-				print('rot_label[0] =',target[1][0].data.cpu().numpy().reshape(-1))
-
+				print(f"trans_label[0] = {target[0][0].data.cpu().numpy().reshape(-1)}, loss= {output['trans']}")
+				print(f"rot_label[0] = {target[1][0].data.cpu().numpy().reshape(-1)}, loss= {output['rot']}")
+			if self.global_step%10==0 and logs:
+				self.writer.add_scalar("Loss/train/trans", output['trans'], self.global_step)
+				self.writer.add_scalar("Loss/train/rot", output['rot'], self.global_step)
+				self.writer.add_scalar("Loss/train/total", loss, self.global_step)
+				
+				
 			self.global_step += 1
 		return loss.data
 
+	def validate_full(self, epoch):
+		self.model.eval()
+		trans_losses = []
+		rot_losses = []
+		trans_uncertain_losses = []
+		rot_uncertain_losses = []
+		seg_losses = []
+		adi_losses = []
 
+		with torch.no_grad():
+			for data, target, A_in_cams, B_in_cams, rgbA, rgbB, maskA, maskB in self.valid_data:
+				dataA = data[0]
+				dataB = data[1]
+				dataA = dataA.cuda()
+				dataB = dataB.cuda()
+				for i in range(len(target)):
+					target[i] = target[i].cuda()
+				pred = self.model(dataA,dataB)
+				output = self.model.loss((pred['trans'],pred['rot']), target)
+				trans_losses.append(output['trans'].cpu().item())
+				rot_losses.append(output['rot'].cpu().item())
+
+		trans_loss = np.array(trans_losses).mean()
+		rot_loss = np.array(rot_losses).mean()
+		total_loss = trans_loss*self.loss_weights['trans'] + rot_loss*self.loss_weights['rot']
+
+		return total_loss, trans_loss, rot_loss
+	
 	def validate(self, epoch):
 		self.model.eval()
 		trans_losses = []
@@ -132,11 +170,16 @@ class Problem:
 		return total_loss
 
 
-	def loop(self, total_epochs, output_path, save_all_checkpoints=False):
+	def loop(self, total_epochs, output_path, save_all_checkpoints=False, logs=False):
+		
 		for epoch in range(0, total_epochs):
 			print(">>>>>>>>>>>>>> epoch {}".format(epoch))
-			train_loss = self.train(epoch)
-			validation_loss_average = self.validate(epoch)
+			train_loss = self.train(epoch,logs=logs)
+			loss_total,loss_trans,loss_rot = self.validate_full(epoch=epoch)
+			self.writer.add_scalar("Loss/valid/total",loss_total,self.global_step)
+			self.writer.add_scalar("Loss/valid/trans",loss_trans,self.global_step)
+			self.writer.add_scalar("Loss/valid/rot",loss_rot,self.global_step)
+			validation_loss_average = loss_total
 			if train_loss<self.best_train:
 				self.best_train = train_loss
 				checkpoint_data = {'state_dict': self.model.state_dict()}

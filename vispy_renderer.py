@@ -43,6 +43,7 @@ from PIL import Image
 import cv2,argparse,pickle,time
 from plyfile import PlyData, PlyElement
 from Utils import *
+import threading
 
 class VispyRenderer(app.Canvas):
 	def __init__(self, model_path, K, H, W, backend="pyglet"):
@@ -120,7 +121,6 @@ class VispyRenderer(app.Canvas):
 		self.data['a_position'] = vertices.copy()
 		self.data['a_color'] = vertex_color/255.0
 		self.data['a_normal'] = vertex_normal.copy()
-
 		self.vertex_buffer = gloo.VertexBuffer(self.data)
 		self.index_buffer = gloo.IndexBuffer(face_indices.reshape(-1).astype(np.uint32))
 
@@ -151,12 +151,15 @@ class VispyRenderer(app.Canvas):
 
 	def on_draw(self, event):
 		with self.fbo:
+			
 			gloo.set_state(depth_test=True)
 			gloo.set_cull_face('back')
 			gloo.clear(color=True, depth=True)
 			gloo.set_viewport(0, 0, *self.size)
 			self.program.draw('triangles', self.index_buffer)
 
+			
+			
 			self.rgb = gl.glReadPixels(0, 0, self.size[0], self.size[1], gl.GL_RGB, gl.GL_UNSIGNED_BYTE)
 			self.depth = gl.glReadPixels(0, 0, self.size[0], self.size[1], gl.GL_DEPTH_COMPONENT, gl.GL_FLOAT)
 			self.rgb = np.frombuffer(self.rgb, dtype=np.uint8).reshape((self.size[1], self.size[0], 3))
@@ -172,7 +175,6 @@ class VispyRenderer(app.Canvas):
 		light_direction = np.dot(np.linalg.inv(ob2cam_gl.T), np.array([0, 0.1, -0.9, 1]))[:3]
 		self.program["light_direction"] = light_direction.astype(np.float32)
 		self.program['view'] = ob2cam_gl.T
-
 		self.update()
 		self.on_draw(None)
 		return self.rgb, self.depth

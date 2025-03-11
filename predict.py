@@ -70,6 +70,10 @@ from functools import partial
 from itertools import repeat
 import multiprocessing as mp
 from vispy_renderer import VispyRenderer
+import queue
+from concurrent.futures import Future
+import time
+import gc
 
 
 random.seed(0)
@@ -122,16 +126,22 @@ def use_posecnn_res(class_id,seq_frame_str):
   pose[:3,3] = xyz
   return pose
 
+def print_gpu_memory():
+    print(f'Allocated: {torch.cuda.memory_allocated() / 1024 ** 2} MB')
+    print(f'Cached: {torch.cuda.memory_reserved() / 1024 ** 2} MB')
+    print(torch.cuda.memory_summary(device=torch.cuda.current_device()))
 
 
 class Tracker:
   def __init__(self, dataset_info, images_mean, images_std, ckpt_dir, model_path=None, trans_normalizer=0.03, rot_normalizer=5*np.pi/180):
+    self.vispy_renderer_queue = queue.Queue()
     self.dataset_info = dataset_info
     self.image_size = (dataset_info['resolution'], dataset_info['resolution'])
-    mesh = trimesh.load(model_path)
+    self.model_path = model_path
+    mesh = trimesh.load(self.model_path)
     self.object_cloud = toOpen3dCloud(mesh.vertices)
     self.object_cloud = self.object_cloud.voxel_down_sample(voxel_size=0.005)
-
+    
     print('self.object_cloud loaded and downsampled')
     if 'object_width' not in dataset_info:
       object_max_width = compute_obj_max_width(np.asarray(self.object_cloud.points))
@@ -149,37 +159,59 @@ class Tracker:
 
     print('Loading ckpt from ',ckpt_dir)
     checkpoint = torch.load(ckpt_dir)
-    if 'epoch' in checkpoint:
-      print('pose track ckpt epoch={}'.format(checkpoint['epoch']))
+    #checkpoint['state_dict'] = checkpoint['state_dict'].cpu()
+    checkpoint_state_dict = {k: v.cpu() for k, v in checkpoint['state_dict'].items()}
+
+    print("vorher_1:")
+    print_gpu_memory()
+    del checkpoint
+    gc.collect()
+    torch.cuda.empty_cache()
+    print("nachher_1:")
+    print_gpu_memory()
+  
+    #if 'epoch' in checkpoint:
+    #  print('pose track ckpt epoch={}'.format(checkpoint['epoch']))
 
     self.model = Se3TrackNet(image_size=self.image_size[0])
-    self.model.load_state_dict(checkpoint['state_dict'])
+    self.model.load_state_dict(checkpoint_state_dict)
     self.model = self.model.cuda()
+    #self.model.cpu()
     self.model.eval()
-    print("net init done")
+    
+    #print(checkpoint['state_dict']['convA1.0.weight'])
+    
 
-    if 'renderer' in dataset_info and dataset_info['renderer']=='pyrenderer':
+    #if 'renderer' in dataset_info and dataset_info['renderer']=='pyrenderer':
+    #  print('Using pyrenderer')
+    #  assert '.obj' in model_path
+    #  self.renderer = Renderer([model_path],self.K,cam_cfg['height'],cam_cfg['width'])
+    #else:
+    #  print('Using vispy renderer')
+    #  # if '.obj' in model_path:
+    #  #   mesh = trimesh.load(model_path)
+    #  #   img = np.asarray(mesh.visual.material.image)[...,:3]
+    #  #   H,W = img.shape[:2]
+    #  #   uv = mesh.visual.uv * np.array([W-1, H-1]).reshape(1,2)
+    #  #   uv = uv.round().astype(int)
+    #  #   vc = img[::-1][uv[:,1], uv[:,0]]
+    #  #   visual_new = trimesh.visual.ColorVisuals(mesh=mesh, vertex_colors=vc)
+    #  #   mesh.visual = visual_new
+    #  #   new_model_path = model_path.replace('.obj','.ply')
+    #  #   mesh.export(new_model_path)
+    #  #   # pdb.set_trace()
+    #  #   model_path = new_model_path
+    #  # pdb.set_trace()
+    #  assert '.ply' in model_path
+    #  self.renderer = VispyRenderer(model_path, self.K, H=dataset_info['resolution'], W=dataset_info['resolution'])
+
+    if '.obj' in self.model_path:
       print('Using pyrenderer')
-      assert '.obj' in model_path
-      self.renderer = Renderer([model_path],self.K,cam_cfg['height'],cam_cfg['width'])
+      self.renderer = Renderer([self.model_path],self.K,cam_cfg['height'],cam_cfg['width'])
     else:
       print('Using vispy renderer')
-      # if '.obj' in model_path:
-      #   mesh = trimesh.load(model_path)
-      #   img = np.asarray(mesh.visual.material.image)[...,:3]
-      #   H,W = img.shape[:2]
-      #   uv = mesh.visual.uv * np.array([W-1, H-1]).reshape(1,2)
-      #   uv = uv.round().astype(int)
-      #   vc = img[::-1][uv[:,1], uv[:,0]]
-      #   visual_new = trimesh.visual.ColorVisuals(mesh=mesh, vertex_colors=vc)
-      #   mesh.visual = visual_new
-      #   new_model_path = model_path.replace('.obj','.ply')
-      #   mesh.export(new_model_path)
-      #   # pdb.set_trace()
-      #   model_path = new_model_path
-      # pdb.set_trace()
-      assert '.ply' in model_path
-      self.renderer = VispyRenderer(model_path, self.K, H=dataset_info['resolution'], W=dataset_info['resolution'])
+      assert '.ply' in self.model_path
+      self.renderer = VispyRenderer(self.model_path, self.K, H=dataset_info['resolution'], W=dataset_info['resolution'])
 
     self.prev_rgb = None
     self.prev_depth = None
@@ -194,34 +226,60 @@ class Tracker:
     '''
     @ob2cam: 4x4 mat ob in opencv cam
     '''
+
     glcam_in_cvcam = np.array([[1,0,0,0],
                               [0,-1,0,0],
                               [0,0,-1,0],
                               [0,0,0,1]])
-    bbox = compute_bbox(ob2cam, self.K, self.object_width, scale=(1000, -1000, 1000))
+    
+    bbox = compute_bbox(ob2cam, self.K, self.object_width, scale=(1000,-1000,1000))#, scale=(1000, -1000, 1000))
+    
     ob2cam_gl = np.linalg.inv(glcam_in_cvcam).dot(ob2cam)
-    left = np.min(bbox[:, 1])
-    right = np.max(bbox[:, 1])
-    top = np.min(bbox[:, 0])
-    bottom = np.max(bbox[:, 0])
+    left = np.min(bbox[:, 1])  # 1
+    right = np.max(bbox[:, 1]) # 1
+    top = np.min(bbox[:, 0])   # 0
+    bottom = np.max(bbox[:, 0])# 0
     if isinstance(self.renderer,VispyRenderer):
+      #print("Vispy render")
+
+      s1 = time.time_ns()
       self.renderer.update_cam_mat(self.K, left, right, bottom, top)
+      #self.renderer.update_cam_mat(self.K, left, right, bottom, top)
+      #self.renderer.update_cam_mat(self.K,0,self.K[0,2]*2,self.K[1,2]*2,0)# muss später wieder auskommentiert werden
       render_rgb, render_depth = self.renderer.render_image(ob2cam_gl)
+      #render_rgb, render_depth = self.renderer.render_image(ob2cam_gl)
+      
+      #render_rgb, render_depth = self.renderer.render_image(ob2cam)
+      
     else:
-      bbox = compute_bbox(ob2cam, self.K, self.object_width, scale=(1000, 1000, 1000))
+      #print("No Vispy Render")
+      bbox = compute_bbox(ob2cam, self.K, self.object_width,scale=(1000,1000,1000))#, scale=(1000, 1000, 1000))
       rgb, depth = self.renderer.render([ob2cam])
       depth = (depth*1000).astype(np.uint16)
       render_rgb, render_depth = crop_bbox(rgb, depth, bbox, self.image_size)
     return render_rgb, render_depth
-
+  # ermittelt ob das Objekt innerhalb der Kamera liegt
+  def is_object_window(self,pose):
+    bb = compute_bbox(pose, self.K, self.object_width,scale=(1000,1000,1000))
+    img_shape = (int(self.K[0,2]*2),int(self.K[1,2]*2))
+    width = img_shape[0]
+    height  = img_shape[1]
+    mid = bb[0] + ((bb[3]-bb[0])/2)
+    #print(bb)
+    #print((bb[3]-bb[0])/2)
+    #print(mid)
+    if mid[1] < 0 or mid[1] > width or mid[0] < 0 or mid[0] > height:
+      return False
+    return True
   def on_track(self, prev_pose, current_rgb, current_depth, gt_A_in_cam=None,gt_B_in_cam=None, debug=False, samples=1):
+    
+    if not self.is_object_window(prev_pose):
+        print("OBJEKT IS NICHT AUF FOTO")
+        return prev_pose
+    #end test section
+    #print(f"TIME A: {round(time.time() * 1000)}")
     K = self.K
     A_in_cam = prev_pose.copy()
-    glcam_in_cvcam = np.array([[1,0,0,0],
-                              [0,-1,0,0],
-                              [0,0,-1,0],
-                              [0,0,0,1]])
-
     bbs = []
     sample_poses = []
     rgbBs = []
@@ -229,13 +287,19 @@ class Tracker:
     for i in range(samples):
       if i==0:
         sample_pose = prev_pose.copy()
-      bb = compute_bbox(sample_pose, self.K, self.object_width, scale=(1000, 1000, 1000))
+      
+      bb = compute_bbox(sample_pose, self.K, self.object_width,scale=(1000,1000,1000))#, scale=(1000, 1000, 1000))
       bbs.append(bb)
+      #print(bb)
+
+      # print bb
+      cv2.rectangle(current_rgb, (bb[0,1],bb[0,0]), (bb[3,1],bb[3,0]), (0, 255, 0), 2)
+      cv2.imshow("Bounding Box", current_rgb)
+
       sample_poses.append(sample_pose)
       rgbB, depthB = crop_bbox(current_rgb, current_depth, bb, self.image_size)
       rgbBs.append(rgbB)
       depthBs.append(depthB)
-
     sample_poses = np.array(sample_poses)
     bbs = np.array(bbs)
 
@@ -248,27 +312,30 @@ class Tracker:
       rgbAs.append(rgbA)
       depthAs.append(depthA)
       maskAs.append(maskA)
-
     rgbAs,depthAs,maskAs = list(map(np.array, [rgbAs,depthAs,maskAs]))
-
     rgbAs_backup = rgbAs.copy()
     rgbBs_backup = rgbBs.copy()
 
     if gt_B_in_cam is None:
-      print('**** gt_B_in_cam set to Identity')
+      #print('**** gt_B_in_cam set to Identity')
       gt_B_in_cam = np.eye(4)
-
+    #print(f"TIME B: {round(time.time() * 1000)}")
+      
     dataAs = []
     dataBs = []
     for i in range(samples):
       sample = self.dataset.processData(rgbAs[i],depthAs[i],sample_poses[i],rgbBs[i],depthBs[i],gt_B_in_cam)[0]
       dataAs.append(sample[0].unsqueeze(0))
       dataBs.append(sample[1].unsqueeze(0))
+    #dataA = torch.cat(dataAs,dim=0).cpu().float() 
     dataA = torch.cat(dataAs,dim=0).cuda().float()
+    #dataB = torch.cat(dataBs,dim=0).cpu().float() 
     dataB = torch.cat(dataBs,dim=0).cuda().float()
-
+    #print(f"TIME C: {round(time.time() * 1000)}")
+    s1 = time.time_ns()
     with torch.no_grad():
       prediction = self.model(dataA,dataB)
+    #print(f"TIME D: {round(time.time() * 1000)}")
 
     pred_B_in_cams = []
     for i in range(samples):
@@ -278,23 +345,43 @@ class Tracker:
       pred_B_in_cams.append(pred_B_in_cam)
 
     pred_B_in_cams = np.array(pred_B_in_cams)
+    #pred_B_in_cams = np.array([A_in_cam]) # muss später wieder auskommentiert werden
     final_estimate = pred_B_in_cams[0].copy()
     self.prev_rgb = current_rgb
     self.prev_depth = current_depth
     pred_color, pred_depth = self.render_window(final_estimate)
-    canvas = makeCanvas([rgbBs_backup[0], pred_color], flipBR=True)
+    #pred_color, pred_depth = self.render_window(np.array(A_in_cam)) # muss später wieder auskommentiert werden
+
+    #test section
+    #pred_color2, pred_depth = self.render_window(final_estimate)
+    #pred_color1, pred_depth = self.render_window(np.array(A_in_cam))
+    #canv = makeCanvas([pred_color1, pred_color2], flipBR=False)
+    #cv2.imshow("TEST",canv)
+    
+    
+    canvas = makeCanvas([rgbBs_backup[0],rgbAs_backup[0], pred_color], flipBR=False)
+    #print(f"TIME E: {round(time.time() * 1000)}")
     cv2.imshow('AB',canvas)
-    if self.frame_cnt==0:
-        cv2.waitKey(1)
-    else:
-        cv2.waitKey(1)
+    cv2.waitKey(10)
+    #print(f"TIME F: {round(time.time() * 1000)}")
     self.frame_cnt += 1
 
     if samples==1:
       return pred_B_in_cams[0]
-
+    
     return pred_B_in_cams[0]
 
+  def update_cam(self,cam_K):
+    self.K = cam_K.copy()
+    img_shape = (int(self.K[0,2]*2),int(self.K[1,2]*2))
+    if '.obj' in self.model_path:
+      print('Updating pyrenderer')
+      self.renderer = Renderer([self.model_path],self.K,img_shape[1],img_shape[0])
+      print(f"height:{img_shape[1]}, width: {img_shape[0]}, K: {self.K}")
+    else:
+      print('Updating vispy renderer')
+      assert '.ply' in self.model_path
+      self.renderer = VispyRenderer(self.model_path, self.K, H=self.dataset_info['resolution'], W=self.dataset_info['resolution'])
 
 def getResultsYcb():
   debug = False
@@ -559,7 +646,7 @@ def predictSequenceYcb():
       cv2.imwrite(out_dir+'%07d.png'%(i),cur_bgr)
     cur_bgr = cv2.resize(cur_bgr,(W//2,H//2))
     if i==1:
-      cv2.waitKey(1)
+      cv2.waitKey(0)
     else:
       cv2.waitKey(1)
   pred_poses = np.array(pred_poses)
@@ -616,7 +703,6 @@ def predictSequenceYcbInEOAT():
     for ii in range(len(uvs)):
       cv2.circle(cur_bgr,(uvs[ii,0],uvs[ii,1]),radius=1,color=(0,255,255),thickness=-1)
     cv2.putText(cur_bgr,"frame:{}".format(i), (W//2,H-50), cv2.FONT_HERSHEY_SIMPLEX, fontScale=1,thickness=4,color=(255,0,0))
-    cv2.imshow('1',cur_bgr)
     if i==0:
       cv2.waitKey(0)
     else:

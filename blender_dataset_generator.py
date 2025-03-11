@@ -35,10 +35,10 @@
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+from pickle import TRUE
 import bpy
 import os, sys, time,copy,string
-code_dir = os.path.dirname(os.path.realpath(__file__))
-sys.path.append(code_dir)
+
 import cv2
 from PIL import Image, ImageDraw
 import yaml
@@ -51,12 +51,51 @@ import transformations as T
 from mathutils import Vector, Matrix, Quaternion
 import multiprocessing
 import re
+import random
 
+start = 0
 
+def init():
+  #bpy.context.scene.world.light_settings.use_environment_light = True
+  tree = bpy.context.scene.node_tree
+  tree.render_quality = "HIGH"
+  tree.edit_quality = "MEDIUM"
+  tree.use_opencl = True
+
+  links = tree.links
+
+  for n in tree.nodes:
+    tree.nodes.remove(n)
+
+  #================ collect images and label ===================
+  render_node = tree.nodes.new('CompositorNodeRLayers')
+  rgb_node = tree.nodes.new('CompositorNodeOutputFile')   # rgb
+  rgb_node.format.file_format = 'PNG'
+  links.new(render_node.outputs['Image'], rgb_node.inputs[0])
+
+  depth_node = tree.nodes.new('CompositorNodeOutputFile')   # depth
+  depth_node.format.file_format = 'OPEN_EXR'
+  links.new(render_node.outputs['Depth'], depth_node.inputs[0])
+
+  seg_node = tree.nodes.new('CompositorNodeOutputFile')   # seg
+  seg_node.format.file_format = 'OPEN_EXR'
+  links.new(render_node.outputs['IndexOB'], seg_node.inputs[0])
+
+  bpy.context.scene.cycles.samples = 100
+  bpy.context.scene.render.use_simplify = True
+
+  #neu
+  bpy.context.scene.cycles.use_denoising = True
+  bpy.context.scene.cycles.denoiser = 'OPTIX'
+
+  bpy.context.scene.cycles.tile_x = 64
+  bpy.context.scene.cycles.tile_y = 64
+  bpy.context.scene.cycles.samples = 128
+
+  return rgb_node, depth_node, seg_node
 
 def readExr(exr_dir):
   return cv2.imread(exr_dir, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
-
 
 def matrixToNumpyArray(mat):
     new_mat = np.array([[mat[0][0],mat[0][1],mat[0][2],mat[0][3]],
@@ -81,8 +120,6 @@ def changeEnvironmentLight(dataset_info):
   env_color_b = np.random.uniform(dataset_info['blender']['env_light_color'][2][0], dataset_info['blender']['env_light_color'][2][1])
   bpy.context.scene.world.ambient_color = (env_color_r,env_color_g,env_color_b)
 
-
-
 def reset(dataset_info):
   changeEnvironmentLight(dataset_info)
   for ob in bpy.data.objects:
@@ -96,7 +133,6 @@ def reset(dataset_info):
   for ob in bpy.data.objects:
     if 'ob' in ob.name.lower():
       ob.location[0] = 9999
-
 
 def setupCamera(H,W,K):
   bpy.context.scene.render.resolution_x = W
@@ -112,9 +148,7 @@ def setupCamera(H,W,K):
   bpy.context.scene.camera = bpy.data.objects['Camera']
   bpy.context.scene.update()
 
-
-def placeObject(ob_name,pose):
-  ob = bpy.data.objects[ob_name]
+def placeObject(ob,pose):
   pose_mat = numpyArrayToMatrix(pose)
   ob.matrix_world = pose_mat
   bpy.context.scene.update()
@@ -144,8 +178,6 @@ def addLightAndPlace(dataset_info,num):
       ob.data.shadow_ray_samples = 6
       ob.data.shadow_ray_sample_method = 'ADAPTIVE_QMC'
 
-
-
 def loadObjectModel(file_dir,index,name):
   folder = file_dir
   if '.' not in file_dir:
@@ -169,7 +201,7 @@ def loadObjectModel(file_dir,index,name):
   imported.pass_index = index
   imported.location[0] = 9999
   imported.name = name
-
+  return imported
 
 
 def changeObjectTexture(ob_name,image_dir):
@@ -188,17 +220,14 @@ def changeObjectTexture(ob_name,image_dir):
   slot.texture = tex
   bpy.context.scene.update()
   ob.active_material.texture_slots[0].texture_coords = 'OBJECT'
-  ob.active_material.texture_slots[0].scale[0] = 4
-  ob.active_material.texture_slots[0].scale[1] = 4
-
-
+  ob.active_material.texture_slots[0].scale[0] = 1
+  ob.active_material.texture_slots[0].scale[1] = 1
 
 def random_string(size):
   chars = list(string.ascii_uppercase + string.digits)
   return ''.join(np.random.choice(chars) for _ in range(size))
 
-
-def render(K,id):
+def render(K,id,rgb_node, depth_node, seg_node):
   '''
     return rgb, depth, id mask. object index was assigned in __init__
     id_mask: see config files
@@ -209,38 +238,16 @@ def render(K,id):
     if 'ob' in ob.name:
       ob.active_material.use_nodes = False
 
-  tree = bpy.context.scene.node_tree
-  tree.render_quality = "HIGH"
-  tree.edit_quality = "HIGH"
-  tree.use_opencl = True
-
-  links = tree.links
-
-  for n in tree.nodes:
-    tree.nodes.remove(n)
-
   #================ collect images and label ===================
-  render_node = tree.nodes.new('CompositorNodeRLayers')
-  rgb_node = tree.nodes.new('CompositorNodeOutputFile')   # rgb
-  rgb_node.format.file_format = 'PNG'
   rgb_node.base_path = out_dir
   rgb_node.file_slots[0].path = "%07drgbB"%(id)
-  links.new(render_node.outputs['Image'], rgb_node.inputs[0])
 
-  depth_node = tree.nodes.new('CompositorNodeOutputFile')   # depth
-  depth_node.format.file_format = 'OPEN_EXR'
   depth_node.base_path = out_dir
   depth_node.file_slots[0].path = "%07ddepthB"%(id)
-  links.new(render_node.outputs['Depth'], depth_node.inputs[0])
 
-  seg_node = tree.nodes.new('CompositorNodeOutputFile')   # seg
-  seg_node.format.file_format = 'OPEN_EXR'
   seg_node.base_path = out_dir
   seg_node.file_slots[0].path = "%07dsegB"%(id)
-  links.new(render_node.outputs['IndexOB'], seg_node.inputs[0])
-
   bpy.ops.render.render(write_still=False)
-
   index = int(re.findall(r'depthB\d{4}',glob.glob(out_dir+'*depthB*.exr')[0])[0].replace('depthB',''))
   rgbB = np.array(Image.open(out_dir+'%07drgbB%04d.png'%(id,index)))[:,:,:3]
   depth_meter = readExr(out_dir+'%07ddepthB%04d.exr'%(id,index))[:,:,0]
@@ -261,12 +268,28 @@ def get_dynamic_objects():
       obs.append(ob)
   return obs
 
+def remove_memory_leak():
+    # memory leak blender
+    for block in bpy.data.meshes:
+      if block.users == 0:
+          bpy.data.meshes.remove(block)
 
-def generate():
-  code_dir = os.path.dirname(os.path.realpath(__file__))
-  dataset_info_dir = f"{code_dir}/dataset_info.yml"
+    for block in bpy.data.materials:
+        if block.users == 0:
+            bpy.data.materials.remove(block)
+
+    for block in bpy.data.textures:
+        if block.users == 0:
+            bpy.data.textures.remove(block)
+
+    for block in bpy.data.images:
+        if block.users == 0:
+            bpy.data.images.remove(block) 
+def generate(rgb_node, depth_node, seg_node):
+  dataset_info_dir = "/home/se3_tracknet/dataset_info.yml"
   with open(dataset_info_dir,'r') as ff:
     dataset_info = yaml.safe_load(ff)
+  out_dir = '{}/generated_data/'.format(dataset_info["output_dir"])
 
   num_images = int((dataset_info['train_samples']+dataset_info['val_samples'])/0.7)
   xmin = dataset_info['blender']['range_x'][0]
@@ -275,12 +298,12 @@ def generate():
   ymax = dataset_info['blender']['range_y'][1]
   zmin = dataset_info['blender']['range_z'][0]
   zmax = dataset_info['blender']['range_z'][1]
+  num_random_objs = dataset_info['num_random_objs']
 
-  code_dir = os.path.dirname(os.path.realpath(__file__))
-  out_dir = f'{code_dir}/generated_data/'
 
   print('Using: {}'.format(dataset_info_dir))
-  os.system(f'rm -rf {out_dir} && mkdir -p {out_dir}')
+  if not os.path.exists(out_dir):
+    os.system(f'rm -rf {out_dir} && mkdir -p {out_dir}')
 
   H = dataset_info['camera']['height']
   W = dataset_info['camera']['width']
@@ -303,12 +326,18 @@ def generate():
   assert len(texture_files)>0
   print('#texture_files:',len(texture_files))
 
+  objs_count = 0
+  obs_name = []
   for k in dataset_info['models'].keys():
     obj_file = dataset_info['models'][k]['model_path'].replace('.ply','.obj')
-    loadObjectModel(obj_file,index=k,name=str(k))
+    ob = loadObjectModel(obj_file,index=k,name=str(k))
+    objs_count+=1
+    obs_name.append(ob.name)
 
   id2ob = {}
   obs = get_dynamic_objects()
+  #obs = obs[0:num_random_objs+objs_count]
+  
   for ob in obs:
     print(ob.name)
     bpy.context.scene.objects.active = ob
@@ -332,7 +361,7 @@ def generate():
   print('class_ids',class_ids)
 
 
-  count = 0
+  count = start
   while count<num_images:
     print('>>>>>>>>>>>>>>>>>>>>>>>>>> {}/{}'.format(count,num_images))
     reset(dataset_info)
@@ -346,25 +375,34 @@ def generate():
       if 'box_plane' in ob.name:
         changeObjectTexture(ob.name,texture_file)
 
-    obs = get_dynamic_objects()
+    count_objects_set = 0
     for ob in obs:
-      pose = np.eye(4)
-      pose[0,3] = np.random.uniform(xmin,xmax)
-      pose[1,3] = np.random.uniform(ymin,ymax)
-      pose[2,3] = np.random.uniform(zmin,zmax)
-      pose[:3,:3] = T.random_rotation_matrix()[:3,:3]
-      placeObject(ob.name,pose)
 
+      if (ob.name in obs_name):
+        pos = (np.random.uniform(xmin,xmax),np.random.uniform(ymin,ymax),np.random.uniform(zmin,zmax))
+        rot = T.random_rotation_matrix()
+        ob.rotation_euler = T.euler_from_matrix(rot)
+        ob.location = pos
+
+      if  (random.random()<0.5 and count_objects_set<num_random_objs):
+        pos = (np.random.uniform(xmin,xmax),np.random.uniform(ymin,ymax),np.random.uniform(zmin,zmax))
+        rot = T.random_rotation_matrix()
+        ob.rotation_euler = T.euler_from_matrix(rot)
+        ob.location = pos
+        count_objects_set+=1
+
+    
+    bpy.context.scene.update()
     print('start gravity simulation')
     bpy.context.scene.gravity = np.random.uniform(-2,2,size=3)
 
-    for ii in range(1,4):
+    for ii in range(1,3):
       bpy.context.scene.frame_set(ii)
     bpy.context.scene.update()
 
     blendercam_in_world = matrixToNumpyArray(bpy.data.objects['Camera'].matrix_world)
 
-    rgbB, depthB, segB = render(K,count)
+    rgbB, depthB, segB = render(K,count,rgb_node, depth_node, seg_node)
     if (segB>0).sum()<100:   #Target object not in the image
       print('segB too small')
       continue
@@ -375,6 +413,7 @@ def generate():
     cv2.imwrite(out_dir+'/%07dseg.png'%(count),segB.astype(np.uint8))
 
     bpy.context.scene.update()
+    
     poses_in_world = []
     for class_id in class_ids:
       ob = id2ob[class_id]
@@ -383,6 +422,7 @@ def generate():
     poses_in_world = np.array(poses_in_world)
     np.savez(out_dir+'/%07dposes_in_world.npz'%(count), class_ids=class_ids, poses_in_world=poses_in_world, blendercam_in_world=blendercam_in_world,K=K)
 
+    remove_memory_leak()
     count += 1
 
 
@@ -393,7 +433,17 @@ def generate():
 
 
 if __name__=='__main__':
-  generate()
+  # Speichere den ursprünglichen Kontext
+  #original_context = bpy.context.copy()
+
+  # Modifiziere den Kontext, um die Ausgabe zu unterdrücken
+  #bpy.context = bpy.context.copy()
+  #bpy.context['stdout'] = bpy.context['stderr'] = open('nul', 'w')  # In Unix-basierten Systemen
+  rgb_node, depth_node, seg_node = init()
+  generate(rgb_node, depth_node, seg_node)
+
+  # Stelle den ursprünglichen Kontext wieder her
+  #bpy.context = original_context
 
 
 

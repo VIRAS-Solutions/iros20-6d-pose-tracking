@@ -93,7 +93,7 @@ def adi(pred,gt,model):
   gt_model.transform(gt)
 
   nn_index = spatial.cKDTree(np.asarray(pred_model.points).copy())
-  nn_dists, _ = nn_index.query(np.asarray(gt_model.points).copy(), k=1, n_jobs=10)
+  nn_dists, _ = nn_index.query(np.asarray(gt_model.points).copy(), k=1, workers=10)
   e = nn_dists.mean()
   return e
 
@@ -299,23 +299,35 @@ def sample_views(min_n_views, radius=[1],
   return views, pts_level
 
 
+# Berechnet die 2D Bounding Box des projizierten Objektes aus den 3D Objekt Koordinaten
 def compute_bbox(pose, K, scale_size=230, scale=(1, 1, 1)):
+
+  # x,y,z = Translation des Objektes in Bezug auf die kamera
   obj_x = pose[0, 3] * scale[0]
   obj_y = pose[1, 3] * scale[1]
   obj_z = pose[2, 3] * scale[2]
+
+  # Offet der Abstand der BB vom Mittelpunkt zu den Rändern
   offset = scale_size / 2
+
+  # BB im 3D Berechnen
   points = np.ndarray((4, 3), dtype=np.float)
   points[0] = [obj_x - offset, obj_y - offset, obj_z]     # top left
   points[1] = [obj_x - offset, obj_y + offset, obj_z]     # top right
   points[2] = [obj_x + offset, obj_y - offset, obj_z]     # bottom left
   points[3] = [obj_x + offset, obj_y + offset, obj_z]     # bottom right
+
+  # BB in 2D Umwandeln
   projected_vus = np.zeros((points.shape[0], 2))
   projected_vus[:, 1] = points[:, 0] * K[0,0] / points[:, 2] + K[0,2]
   projected_vus[:, 0] = points[:, 1] * K[1,1] / points[:, 2] + K[1,2]
   projected_vus = np.round(projected_vus).astype(np.int32)
+  
+  #points_proj = np.dot(K,points.T)
+  #points_proj = points_proj[0:2]/points_proj[-1]
+  #points_proj = points_proj.T
+  #projected_vus = np.round(points_proj).astype(np.int32)
   return projected_vus
-
-
 
 def crop_bbox(color, depth, boundingbox, output_size=(100, 100), seg=None):
   left = np.min(boundingbox[:, 1])
@@ -338,11 +350,66 @@ def crop_bbox(color, depth, boundingbox, output_size=(100, 100), seg=None):
   left = max(left, 0)
   bottom = min(bottom, h)
   right = min(right, w)
+  #print(f"h:{h},w:{w},top:{top},bottom:{bottom},left:{left},right:{right},crop_h:{crop_h},crop_w:{crop_w},top_offset:{top_offset},bottom_offset:{bottom_offset},left_offset:{left_offset},right_offset:{right_offset}")
+  try:
+    color_crop[top_offset:bottom_offset, left_offset:right_offset, :] = color[top:bottom, left:right, :]
+    depth_crop[top_offset:bottom_offset, left_offset:right_offset] = depth[top:bottom, left:right]
+  except:
+    print("Error on Crop Box (Utils.py):")
+    print(f"h:{h},w:{w},top:{top},bottom:{bottom},left:{left},right:{right},crop_h:{crop_h},crop_w:{crop_w},top_offset:{top_offset},bottom_offset:{bottom_offset},left_offset:{left_offset},right_offset:{right_offset}")
+  resized_rgb = cv2.resize(color_crop, output_size, interpolation=cv2.INTER_NEAREST)
+  resized_depth = cv2.resize(depth_crop, output_size, interpolation=cv2.INTER_NEAREST)
+
+  if seg is not None:
+    seg_crop[top_offset:bottom_offset, left_offset:right_offset] = seg[top:bottom, left:right]
+    resized_seg = cv2.resize(seg_crop, output_size, interpolation=cv2.INTER_NEAREST)
+    final_seg = resized_seg.copy()
+
+  mask_rgb = resized_rgb != 0
+  mask_depth = resized_depth != 0
+  resized_depth = resized_depth.astype(np.uint16)
+  final_rgb = resized_rgb * mask_rgb
+  final_depth = resized_depth * mask_depth
+  if seg is not None:
+    return final_rgb, final_depth, final_seg
+  else:
+    return final_rgb, final_depth
+
+def crop_bbox1(color, depth, boundingbox, output_size=(100, 100), seg=None):
+  left = np.min(boundingbox[:, 0])
+  right = np.max(boundingbox[:, 0])
+  top = np.min(boundingbox[:, 1])
+  bottom = np.max(boundingbox[:, 1])
+
+  h, w, c = color.shape
+  crop_w = right - left
+  crop_h = bottom - top
+  color_crop = np.zeros((crop_h, crop_w, 3), dtype=color.dtype)
+  depth_crop = np.zeros((crop_h, crop_w), dtype=np.float)
+  seg_crop = np.zeros((crop_h, crop_w), dtype=np.uint8)
+  top_offset = abs(min(top, 0))
+  #-min(h-bottom),0)
+  bottom_offset = min(crop_h - (bottom - h), crop_h)
+  #bottom_offset = -min(h-bottom,0)
+  right_offset = min(crop_w - (right - w), crop_w)
+  right_offset = min(right,crop_w)
+  left_offset = abs(min(left, 0))
+
+  print(f"{boundingbox};{left},{right},{top},{bottom},{h},{w}")
+  print(color.shape)
+  print(f"{top_offset}:{bottom_offset}|{left_offset}:{right_offset}")
+
+  top = max(top, 0)
+  left = max(left, 0)
+  bottom = min(bottom, h)
+  right = min(right, w)
+  print(f"{top_offset}-{bottom_offset} = {top_offset-bottom_offset}")
+  print(f"{top}-{bottom} = {top-bottom}")
+  
   color_crop[top_offset:bottom_offset, left_offset:right_offset, :] = color[top:bottom, left:right, :]
   depth_crop[top_offset:bottom_offset, left_offset:right_offset] = depth[top:bottom, left:right]
   resized_rgb = cv2.resize(color_crop, output_size, interpolation=cv2.INTER_NEAREST)
   resized_depth = cv2.resize(depth_crop, output_size, interpolation=cv2.INTER_NEAREST)
-
   if seg is not None:
     seg_crop[top_offset:bottom_offset, left_offset:right_offset] = seg[top:bottom, left:right]
     resized_seg = cv2.resize(seg_crop, output_size, interpolation=cv2.INTER_NEAREST)

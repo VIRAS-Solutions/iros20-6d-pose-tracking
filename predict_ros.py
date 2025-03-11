@@ -27,7 +27,7 @@ class TrackerRos:
     self.sub_color = rospy.Subscriber(args.rgb_topic, Image, self.grab_color)
     self.listener = tf.listener.TransformListener()
     self.tf_pub = tf.broadcaster.TransformBroadcaster()
-    self.A_in_cam = pose_init.copy()
+    self.A_in_cam = pose_init.copy() # ist die erste Pose
 
   def reset(self,pose_init):
     self.color = None
@@ -45,6 +45,7 @@ class TrackerRos:
     color = CvBridge().imgmsg_to_cv2(msg, desired_encoding="bgr8")
     self.color = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
 
+  # hier müsste eine Methode, welche die Transformation über ROS empfängt und self.A_in_cam auf diese setzt.
   def on_track(self):
     if self.color is None:
       print('color is None')
@@ -57,7 +58,7 @@ class TrackerRos:
       return
 
     ob_in_cam = self.tracker.on_track(self.A_in_cam,self.color.astype(np.uint8), self.depth, gt_A_in_cam=np.eye(4),gt_B_in_cam=np.eye(4), debug=False,samples=1)
-    self.A_in_cam = ob_in_cam.copy()
+    self.A_in_cam = ob_in_cam.copy() # hier wird die neue position ermittelt
 
     trans = ob_in_cam[:3,3]
     q_wxyz = quaternion_from_matrix(ob_in_cam)
@@ -71,13 +72,13 @@ if __name__=="__main__":
   rospy.init_node('my_node', anonymous=True)
   code_dir = os.path.dirname(os.path.realpath(__file__))
   parser = argparse.ArgumentParser()
-  parser.add_argument('--artifact_id', type=int, default=772)
+  parser.add_argument('--artifact_id', type=int, default=772) # nummer des gesicherten models
   parser.add_argument('--pose_init_file', type=str, default=f"{code_dir}/pose_init.txt")
-  parser.add_argument('--rgb_topic', type=str, default='/camera/color/image_raw')
-  parser.add_argument('--depth_topic', type=str, default='/camera/aligned_depth_to_color/image_raw')
-  parser.add_argument('--artifacts_folder', type=str, default='/media/bowen/56c8da60-8656-47c3-b940-e928a3d4ec3b/artifacts_se3_tracknet')
-  parser.add_argument('--camera_frame_name', type=str, default='/camera_color_optical_frame')
-  parser.add_argument('--object_frame_name', type=str, default='/ob')
+  parser.add_argument('--rgb_topic', type=str, default='/camera/color/image_raw') # subscribe topic
+  parser.add_argument('--depth_topic', type=str, default='/camera/aligned_depth_to_color/image_raw') # subscribe topic
+  parser.add_argument('--artifacts_folder', type=str, default='/media/bowen/56c8da60-8656-47c3-b940-e928a3d4ec3b/artifacts_se3_tracknet') # path to save model
+  parser.add_argument('--camera_frame_name', type=str, default='/camera_color_optical_frame') # camera frame for publish transformation, related to camera
+  parser.add_argument('--object_frame_name', type=str, default='/ob') # publisher topic
 
 
   args = parser.parse_args()

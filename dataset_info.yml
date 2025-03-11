@@ -1,29 +1,40 @@
 camera:   #Intrinsic params
-  height: 480
-  width: 640
-  focalX: 1.066778000000000020e+03
-  focalY: 1.067487000000000080e+03
-  centerX: 3.129868999999999915e+02
-  centerY: 2.413109000000000037e+02
+#  height: 480 # Original
+#  width: 640 # Original
+#  focalX: 1.066778000000000020e+03 #Original
+#  focalY: 1.067487000000000080e+03 # Original
+#  centerX: 3.129868999999999915e+02 # Original
+#  centerY: 2.413109000000000037e+02 # Original
+  height: 720
+  width: 1280
+  focalX: 900.0 #441.14288330078127
+  focalY: 900.0 #441.14288330078127
+  centerX: 640.0
+  centerY: 360.0
 
-
-train_samples: 200000               # Number of training samples
-val_samples: 2000                      # Number of validation samples
-max_translation: 0.02                # max possible translation in meter bewteen consecutive images in your video
+train_samples: 10 #20000               # Number of training samples
+val_samples: 1 #2000                      # Number of validation samples
+max_translation: 0.02               # max possible translation in meter bewteen consecutive images in your video
 max_rotation: 15                      #max possible rotation in degree bewteen consecutive images in your video
-boundingbox: 10                        # Bounding box padding percentage. No need to change
+boundingbox: 10 #10                        # Bounding box padding percentage. No need to change
 resolution: 176                          # Resolution of the image
 distribution: gauss              # no need to change this
 renderer: pyrenderer
+#renderer: vispy
+
+num_random_objs: 4
+
+output_dir: /home/se3_tracknet/generated_Datasets/002
 
 models:
-  0:   # Index in rendered segmentation image
-    model_path: /home/se3_tracknet/object_models/bunny/1.ply  # Path to your CAD model
+  0:
+    model_path: /DATASET/models/Marker/textured.obj
+
 
 blender:
   range_x: [-0.3,0.3]
   range_y: [-0.3,0.3]
-  range_z: [0.4,0.9]
+  range_z: [0.5,0.9]
   env_light_range: [0.3,5]
   env_light_color: [[0,0.05], [0,0.05], [0,0.05]]    #color type float
   max_lamp_num: 3
@@ -33,6 +44,51 @@ blender:
 
 texture_folders:  # Images to use as background during syn data generation
   [
-    '/media/bowen/e25c9489-2f57-42dd-b076-021c59369fec/DATASET/dtd/images/**/*.jpg',
-    '/media/bowen/e25c9489-2f57-42dd-b076-021c59369fec/DATASET/ETH_Synthesizability/**/*.jpg',
+    '/DATASET/Background_Images/*.jpg',
+    '/DATASET/Background_Images/*.jpeg',
+    '/DATASET/Background_Images/*.png',
   ]
+
+#  0:   # Index in rendered segmentation image
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/002_master_chef_can/textured.ply  # Path to your CAD model
+#  1:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/003_cracker_box/textured.ply  # Path to your CAD model
+#  2:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/004_sugar_box/textured.ply  # Path to your CAD model
+#  3:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/005_tomato_soup_can/textured.ply  # Path to your CAD model
+#  4:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/006_mustard_bottle/textured.ply  # Path to your CAD model
+#  5:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/007_tuna_fish_can/textured.ply  # Path to your CAD model
+#  6:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/008_pudding_box/textured.ply  # Path to your CAD model
+#  7:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/009_gelatin_box/textured.ply  # Path to your CAD model
+#  8:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/010_potted_meat_can/textured.ply  # Path to your CAD model
+#  9:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/011_banana/textured.ply  # Path to your CAD model
+#  10:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/019_pitcher_base/textured.ply  # Path to your CAD model
+#  11:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/021_bleach_cleanser/textured.ply  # Path to your CAD model
+#  12:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/024_bowl/textured.ply  # Path to your CAD model
+#  13:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/025_mug/textured.ply  # Path to your CAD model
+#  14:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/035_power_drill/textured.ply  # Path to your CAD model
+#  15:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/036_wood_block/textured.ply  # Path to your CAD model
+#  16:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/037_scissors/textured.ply  # Path to your CAD model
+#  0:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/037_scissors/textured.ply  # Path to your CAD model
+#  18:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/051_large_clamp/textured.ply  # Path to your CAD model
+#  1:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/040_large_marker/textured.ply  # Path to your CAD model
+#  20:
+#    model_path: /DATASET/YCB_models_with_ply/CADmodels/052_extra_large_clamp/textured.ply  # Path to your CAD model
+  
